@@ -1,20 +1,22 @@
 // ============================================================================
 // 1. RICH CONTEXT INTERFACES
+
+import type { UUIDv7 } from "../types";
+
 // ============================================================================
-export type Protocol = 'HTTP' | 'HTTP2' | 'WS' | 'EVENT' | 'SSE';
-export interface BaseContext {
-  readonly id: string;
-  readonly params: Record<string, string>;
-  readonly store: Map<string, any>;
+export type Protocol = 'HTTP' | 'HTTP2' | 'WS' | 'EVENT' | 'SSE' | 'STREAM';
+export interface BaseContext<TParams = Record<PropertyKey, string>> {
+  readonly id: UUIDv7;
+  readonly params: TParams;
+  readonly store: Map<PropertyKey, any>;
   readonly protocol: Protocol;
 }
 
 /** * Standard HTTP Context
  * Used for HTTP/1.1 and general Web API interactions.
  */
-
-export interface HttpContext<TBody = any, TParams = Record<string, string>> {
-  readonly id: string;
+export interface HttpContext<TBody = any, TParams = Record<PropertyKey, string>> extends BaseContext<TParams> {
+  readonly id: UUIDv7;
   readonly protocol: 'HTTP' | 'HTTP2';
   readonly request: Request; // Standard Web API Request
   readonly params: TParams;
@@ -26,9 +28,9 @@ export interface HttpContext<TBody = any, TParams = Record<string, string>> {
 
   // Fluent Response API
   set: {
-    status: (code: number) => HttpContext;
-    header: (name: string, value: string) => HttpContext;
-    cookie: (name: string, value: string, options?: any) => HttpContext;
+    status: (code: number) => HttpContext<TBody, TParams>;
+    header: (name: string, value: string) => HttpContext<TBody, TParams>;
+    cookie: (name: string, value: string, options?: any) => HttpContext<TBody, TParams>;
   };
 
   // Terminal methods
@@ -42,7 +44,7 @@ export interface HttpContext<TBody = any, TParams = Record<string, string>> {
 /** * HTTP/2 Specific Context
  * Extends HTTP with multiplexing and streaming features.
  */
-export interface Http2Context<TBody = any, TParams = Record<string, string>> extends HttpContext<TBody, TParams> {
+export interface Http2Context<TBody = any, TParams = Record<PropertyKey, string>> extends HttpContext<TBody, TParams> {
   readonly protocol: 'HTTP2';
   readonly streamId: number; // The H2 Stream ID
 
@@ -58,26 +60,53 @@ export interface Http2Context<TBody = any, TParams = Record<string, string>> ext
   setPriority(weight: number, dependency: number): void;
 }
 
-export interface SseContext<TParams = Record<string, string>> {
-  id: string;
-  protocol: 'SSE';
-  readonly request: Request;
-  readonly params: TParams;
-  readonly store: Map<string, any>;
+export interface StreamContext<TParams = Record<PropertyKey, string>> {
+  readonly id: UUIDv7;
+  readonly protocol: 'SSE' | 'STREAM';
 
   /**
-   * Sends a data packet to the client.
-   * Format: `data: {message}\n\n`
+   * The originating HTTP request.
+   */
+  readonly request: Request;
+
+  /**
+   * Route parameters.
+   */
+  readonly params: TParams;
+
+  /**
+   * Per-connection scratchpad.
+   */
+  readonly store: Map<PropertyKey, any>;
+
+  /**
+   * True if the stream is still open.
+   */
+  readonly open: boolean;
+
+  /**
+   * The last event ID sent by the client (from headers).
+   */
+  readonly lastEventId?: string;
+
+  /**
+   * Sends an SSE message.
    */
   send(data: string | object, event?: string, id?: string): void;
 
   /**
-   * Properly closes the stream.
+   * Instructs the client when to retry the connection.
+   */
+  retry(ms: number): void;
+
+  /**
+   * Gracefully closes the SSE stream.
    */
   close(): void;
 
   /**
-   * Hook for when the client disconnects.
+   * Optional hook for cleanup when the client disconnects.
+   * Router-controlled, not transport-leaking.
    */
   onClose(callback: () => void): void;
 }
@@ -97,18 +126,24 @@ export interface SseContext<TParams = Record<string, string>> {
  *   pattern: incoming.event,
  *   payload: incoming.data,
  *   params: myEngine.extractParams(incoming.event), // from your routing engine
+ *   store: new Map(),
  *   socket: ws,
+ *   metadata: new Map([['ip', ws.remoteAddress]]),
+ *   open: !ws.isClosed,
  *   reply: (event, data) => ws.send(JSON.stringify({ event, data })),
  *   broadcast: (event, data) => ws.publish('global_room', JSON.stringify({ event, data })),
  *   to: (room, event, data) => ws.publish(room, JSON.stringify({ event, data })),
  *   // ...
  * };
  */
-export interface EventContext<TPayload = any, TParams = Record<string, string>> {
+export interface EventContext<
+  TPayload = any,
+  TParams = Record<PropertyKey, string>
+> {
   /**
    * Unique identifier for this specific event instance (useful for tracing).
    */
-  readonly id: string;
+  readonly id: UUIDv7;
 
   /**
    * The protocol identifier.
@@ -124,7 +159,6 @@ export interface EventContext<TPayload = any, TParams = Record<string, string>> 
    * Parameters extracted from the pattern (e.g., "rooms.:roomId" -> { roomId: "123" }).
    */
   readonly params: TParams;
-  readonly store: Map<string, any>;
 
   /**
    * The actual data/body of the event.
@@ -132,15 +166,24 @@ export interface EventContext<TPayload = any, TParams = Record<string, string>> 
   readonly payload: TPayload;
 
   /**
-   * Metadata (headers equivalent) like auth tokens, timestamps, or client info.
+   * Per-event scratchpad (lives for the duration of this dispatch).
    */
-  readonly metadata: Map<string, any>;
+  readonly store: Map<PropertyKey, any>;
 
   /**
-   * The underlying socket connection.
-   * In Bun, this would be ServerWebSocket<unknown>.
+   * Connection / event metadata (auth, timestamps, client info).
+   */
+  readonly metadata: Map<PropertyKey, any>;
+
+  /**
+   * Transport handle (intentionally opaque).
    */
   readonly socket: any;
+
+  /**
+   * True if the underlying connection is still active.
+   */
+  readonly open: boolean;
 
   /**
    * Sends a message back ONLY to the client who triggered this event.
@@ -161,66 +204,78 @@ export interface EventContext<TPayload = any, TParams = Record<string, string>> 
    * For RPC-style events: specifically acknowledges receipt or returns a value.
    */
   ack(data?: any): void;
+
+  /**
+   * Gracefully terminate the connection.
+   */
+  close(code?: number, reason?: string): void;
 }
 
 // ============================================================================
 // 2. TYPES & INTERNAL STRUCTURES
 // ============================================================================
 
-export type Handler<T extends RouteContext> = (ctx: T, next?: () => Promise<void>) => Promise<void> | void;
-export type Middleware<T extends RouteContext> = (ctx: T, next: () => Promise<void>) => any;
+export type Handler<C extends RouteContext> = (ctx: C, next?: () => Promise<void>) => Promise<void> | void;
+export type Middleware<C extends RouteContext> = (ctx: C, next?: () => Promise<void>) => any;
 export type ErrorHandler<C extends RouteContext> = (error: Error, ctx: C) => void | Promise<void>;
-export type Pipeline<T extends RouteContext> = (Handler<T> | Middleware<T>)[];
+export type Pipeline<C extends RouteContext> = (Handler<C> | Middleware<C>)[];
 
-export interface RouteRecord<T extends RouteContext> {
-  pipeline: Pipeline<T>;
+export interface RouteRecord<C extends RouteContext> {
+  pipeline: Pipeline<C>;
   isSse?: boolean;
 }
 
-export type RouteContext = HttpContext | Http2Context | EventContext | SseContext | BaseContext;
+export type RouteContext = HttpContext | Http2Context | EventContext | StreamContext | BaseContext;
 
 export type Match<T> =
-  | { found: true; value: T; params: Record<string, string> }
-  | { found: false }
+  | { found: true; value: T; params: Record<PropertyKey, string> }
+  | { found: false; value: undefined; params: undefined }
 
-export interface RouteGroup {
+export interface RouteGroup<C extends RouteContext> {
   prefix: string;
-  middleware: Middleware<any>[];
+  middleware: Middleware<C>[];
 }
 
-// export const HTTP_METHODS = {
-//   GET: "GET",
-//   POST: "POST",
-//   PUT: "PUT",
-//   PATCH: "PATCH",
-//   DELETE: "DELETE",
-//   OPTIONS: "OPTIONS",
-//   HEAD: "HEAD",
-//   TRACE: "TRACE",
-//   CONNECT: "CONNECT",
-// } as const;
+export const HTTP_METHODS = {
+  GET: "GET",
+  POST: "POST",
+  PUT: "PUT",
+  PATCH: "PATCH",
+  DELETE: "DELETE",
+  OPTIONS: "OPTIONS",
+  HEAD: "HEAD",
+} as const;
 
-// export type HttpMethod = typeof HTTP_METHODS[keyof typeof HTTP_METHODS];
+export type HttpMethod = typeof HTTP_METHODS[keyof typeof HTTP_METHODS];
 
-// export const EVENT_METHODS = {
-//   INIT: "init",
-//   START: "start",
-//   STOP: "stop",
-//   DESTROY: "destroy",
+export const STREAM_METHODS = {
+  SSE: "SSE",
+  STREAM: "STREAM",
+}
+export type StreamMethod = typeof STREAM_METHODS[keyof typeof STREAM_METHODS];
 
-//   BEFORE: "before",
-//   AFTER: "after",
+export const EVENT_METHODS = {
+  ON: "ON",
+  CALL: "CALL",
+  SUBSCRIBE: "SUBSCRIBE",
+  UNSUBSCRIBE: "UNSUBSCRIBE",
+  CONNECT: "CONNECT",
+  DISCONNECT: "DISCONNECT",
+} as const;
 
-//   ERROR: "error",
-//   TIMEOUT: "timeout",
+export type EventMethod = typeof EVENT_METHODS[keyof typeof EVENT_METHODS];
 
-//   EMIT: "emit",
-//   LISTEN: "listen",
-//   UNLISTEN: "unlisten",
-// } as const;
+export function isHttpMethod(method: string): method is HttpMethod {
+  return Object.values(HTTP_METHODS).includes(method as HttpMethod);
+}
 
-// export type EventMethod = typeof EVENT_METHODS[keyof typeof EVENT_METHODS];
+export function isEventMethod(method: string): method is EventMethod {
+  return Object.values(EVENT_METHODS).includes(method as EventMethod);
+}
 
+export function isStreamMethod(method: string): method is StreamMethod {
+  return Object.values(STREAM_METHODS).includes(method as StreamMethod);
+}
 
 /**
  * 3. The "Master" Router Helper CatalogTo achieve that Laravel-like

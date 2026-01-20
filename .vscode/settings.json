@@ -35,5 +35,6 @@
   "[jsonc]": {
     "editor.defaultFormatter": "vscode.json-language-features"
   },
-  "turbo.useLocalTurbo": true
+  "turbo.useLocalTurbo": true,
+  "snyk.advanced.autoSelectOrganization": true
 }

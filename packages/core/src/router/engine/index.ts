@@ -69,13 +69,13 @@ const AsciiMap = {
   [DelimAscii.DASH]: '-',
 } as const
 
-const Delimiter = {
+export const AllowedDelimiterMap = {
   SLASH: AsciiMap[DelimAscii.SLASH],
   COLON: AsciiMap[DelimAscii.COLON],
   PIPE: AsciiMap[DelimAscii.PIPE],
 } as const;
 
-export type AllowedDelimiter = typeof Delimiter[keyof typeof Delimiter];
+export type AllowedDelimiter = typeof AllowedDelimiterMap[keyof typeof AllowedDelimiterMap];
 
 export type RadixEngineOptions = {
   nodePoolSizeHint?: number;
@@ -239,7 +239,7 @@ export class RadixEngine<T> {
 
     // Configurable path delimiter.
     // Must be in an allowlist. Default '/'.
-    const d = opts?.delimiter ?? Delimiter.SLASH;
+    const d = opts?.delimiter ?? AllowedDelimiterMap.SLASH;
     const cc = d.charCodeAt(0);
 
     // defensive validation (constructor-only cost)
