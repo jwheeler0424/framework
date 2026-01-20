@@ -1,9 +1,9 @@
 import { RouterBenchmark } from "./router/benchmark";
-import { RadixEngine, type SearchResult } from "./router/engine";
 
 import findMyWay from "find-my-way";
 import { TrieRouter } from "hono/router/trie-router";
 import { createRouter as createRadix3Router } from "radix3";
+import { AetherRouter } from "./router";
 
 function mem(label: string) {
   const m = process.memoryUsage();
@@ -59,19 +59,22 @@ function compileRouteToRegExp(route: string): RegExp {
   return new RegExp(out);
 }
 
-class RadixEngineAdapter implements BenchRouter {
-  private engine: RadixEngine<unknown>;
-  private pool: Uint32Array;
-  private out: SearchResult<any>;
+class AetherRouterAdapter implements BenchRouter {
+  private fmw: AetherRouter;
+  private _matched: boolean;
 
   constructor() {
-    this.engine = new RadixEngine({ assumeAscii: true });
-    this.pool = new Uint32Array(8 * 2);
-    this.out = { found: false };
+    this.fmw = new AetherRouter();
+    this._matched = false;
   }
 
+  // Shared handler (stable identity, no per-route allocations beyond registration)
+  private _handler = (_req: any, _res: any, _params: any) => {
+    this._matched = true;
+  };
+
   add(route: string) {
-    this.engine.insert(route, 1);
+    this.fmw.get(route, [this._handler as any] as any);
   }
 
   addBatch(routes: Array<{ route: string }>) {
@@ -79,7 +82,19 @@ class RadixEngineAdapter implements BenchRouter {
   }
 
   search(path: string): boolean {
-    return this.engine.searchInto(path, this.pool, this.out);
+    if (typeof this.fmw.find === "function") {
+      return this.fmw.find(path, "GET") != null;
+    }
+
+    this._matched = false;
+    const req: any = { method: "GET", url: path };
+    const res: any = {};
+
+    // this.fmw.lookup(req, res, () => {
+    //   // not found; keep _matched=false
+    // });
+
+    return this._matched;
   }
 }
 
@@ -296,7 +311,7 @@ async function comprehensiveExample() {
   ];
 
   // Build Aether
-  const aether = new RadixEngineAdapter();
+  const aether = new AetherRouterAdapter();
   aether.addBatch(routes.map((r) => ({ route: r[0] })));
   // IMPORTANT: finalize to apply densifyLevels + compaction for best small+large performance
   // aether.finalize({

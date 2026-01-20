@@ -1,16 +1,15 @@
+import { createBaseContext } from './context';
 import RadixEngine, { AllowedDelimiterMap, type AllowedDelimiter, type SearchResult } from "./engine"; // Assuming your engine is in index.ts
-import { type EventContext, type EventMethod, type Http2Context, type HttpContext, type HttpMethod, type Middleware, type Pipeline, type RouteContext, type RouteGroup, type RouteRecord, type SseContext, type StreamContext, type StreamMethod } from "./types";
+import { type BaseContext, type ContextRecord, type EventContext, type EventMethod, type Handler, type Http2Context, type HttpContext, type HttpMethod, type Match, type Middleware, type Pipeline, type Protocol, type RouteContext, type RouteGroup, type StreamContext, type StreamMethod } from "./types";
 
-// ============================================================================
-// 3. THE UNIFIED AETHER ROUTER
-// ============================================================================
 type ConfigOptions = {
   eventDelimiter?: AllowedDelimiter;
   cacheSize?: number;
   enableMetrics?: boolean;
 }
+
 export class AetherRouter {
-  private _engines: Map<HttpMethod | EventMethod | StreamMethod, RadixEngine<RouteRecord<RouteContext>>>;
+  private _engines: Map<HttpMethod | EventMethod | StreamMethod, RadixEngine<ContextRecord<RouteContext>>>;
   private _currentGroup: RouteGroup<RouteContext> | null;
   private _queryPointer: number = 0;
   private _queryPool: number[] = [];
@@ -18,18 +17,11 @@ export class AetherRouter {
   private _groupStack: RouteGroup<RouteContext>[] = [{ prefix: '', middleware: [] }];
   // Reusable search artifacts (Zero-Allocation matching)
   private _pool = new Uint32Array(32);
-  private _out: SearchResult<RouteRecord<RouteContext>> = { found: false };
+  private _out: SearchResult<ContextRecord<RouteContext>> = { found: false };
 
   constructor(private config: ConfigOptions = { eventDelimiter: ':' }) {
     this._engines = new Map();
     this._currentGroup = null;
-  }
-
-  private getEngine(key: HttpMethod | EventMethod | StreamMethod, delimiter?: AllowedDelimiter): RadixEngine<RouteRecord<RouteContext>> {
-    if (!this._engines.has(key)) {
-      this._engines.set(key, new RadixEngine({ delimiter }));
-    }
-    return this._engines.get(key)!;
   }
 
   // ==========================================================================
@@ -54,34 +46,8 @@ export class AetherRouter {
     this._currentGroup = previousGroup;
   }
 
-  private normalizePath(path: string, delimiter?: AllowedDelimiter): string {
-    if (!path || path === "") return '';
-
-    let result = '';
-    let lastWasDelimiter = false;
-
-    for (let i = 0; i < path.length; i++) {
-      const ch = path[i];
-      if (ch === delimiter || Object.values(AllowedDelimiterMap).includes(ch as AllowedDelimiter)) {
-        if (!lastWasDelimiter && result.length > 0) {
-          result += ch;
-        }
-        lastWasDelimiter = true;
-      } else {
-        result += ch;
-        lastWasDelimiter = false;
-      }
-    }
-
-    if (result.length > 1 && (result[result.length - 1] === delimiter || Object.values(AllowedDelimiterMap).includes(result[result.length - 1] as AllowedDelimiter))) {
-      result = result.slice(0, -1);
-    }
-
-    return result;
-  }
-
   // --- Public API ---
-  get(pattern: string, ...pipeline: Pipeline<HttpContext | Http2Context>): void {
+  get(pattern: string, ...pipeline: Pipeline<(...args: any) => void>): void {
     this.register('GET', pattern, pipeline);
   }
 
@@ -118,86 +84,282 @@ export class AetherRouter {
   }
 
   /**
-   * Register route for custom method/event type
+   * Register routes for custom method/event type
    */
-  on(method: string, pattern: string, ...pipeline: Pipeline<EventContext>): void {
-    this.register(method, pattern, pipeline);
+  on(pattern: string, ...pipeline: Pipeline<EventContext>): void {
+    this.register("ON", pattern, pipeline);
   }
 
-  private register<C extends RouteContext = unknown>(method: string, pattern: string, pipeline: Pipeline<C>, isSse = false): void {
+  call(pattern: string, ...pipeline: Pipeline<EventContext>): void {
+    this.register("CALL", pattern, pipeline);
+  }
+
+  subscribe(pattern: string, ...pipeline: Pipeline<EventContext>): void {
+    this.register("SUBSCRIBE", pattern, pipeline);
+  }
+
+  unsubscribe(pattern: string, ...pipeline: Pipeline<EventContext>): void {
+    this.register("UNSUBSCRIBE", pattern, pipeline);
+  }
+
+  connect(pattern: string, ...pipeline: Pipeline<EventContext>): void {
+    this.register("CONNECT", pattern, pipeline);
+  }
+
+  disconnect(pattern: string, ...pipeline: Pipeline<EventContext>): void {
+    this.register("DISCONNECT", pattern, pipeline);
+  }
+
+  private register<C extends RouteContext>(method: HttpMethod | EventMethod | StreamMethod, pattern: string, pipeline: Pipeline<any>, isSse = false): void {
+    // const fullPattern = this._currentGroup
+    //   ? this.normalizePath(this._currentGroup.prefix + pattern)
+    //   : this.normalizePath(pattern);
+
     const fullPattern = this._currentGroup
-      ? this.normalizePath(this._currentGroup.prefix + pattern)
-      : this.normalizePath(pattern);
+      ? this._currentGroup.prefix + pattern
+      : pattern;
 
     const fullPipeline = this._currentGroup
       ? [...this._currentGroup.middleware, ...pipeline]
       : pipeline;
 
     const engine = this.getEngine(method);
-    const fullRecord: RouteRecord<C> = {
+    const fullRecord: ContextRecord<C> = {
       pipeline: fullPipeline,
       isSse
     };
-    engine.insert(fullPattern, fullRecord);
+    engine.insert(fullPattern, fullRecord as ContextRecord<RouteContext>);
   }
 
-  // private register<T extends RouteContext>(method: string, pattern: string, handlers: Handler<T>[], isSse = false) {
-  //   const current = this._groupStack[this._groupStack.length - 1]!;
-  //   const isEvent = isEventMethod(method);
-  //   const engine = this.getEngine(method, isEvent ? this.config.eventDelimiter : AllowedDelimiterMap.SLASH);
+  // ==========================================================================
+  // QUERY STRING PARSING
+  // ==========================================================================
 
-  //   engine.insert(current.prefix + pattern, {
-  //     pipeline: [...current.middleware, ...handlers] as any,
-  //     isSse
-  //   });
-  // }
+  private parseQuery(fullPath: string, queryStart: number): Record<PropertyKey, string> {
+    this._queryPointer = 0;
+    const len = fullPath.length;
 
+    if (queryStart >= len) return {};
 
-  // --- Public API ---
+    let cursor = queryStart + 1;
 
-  // get(path: string, ...h: Handler<HttpContext>[]) { this.register('GET', path, h); }
-  // post(path: string, ...h: Handler<HttpContext>[]) { this.register('POST', path, h); }
-  // on(event: string, ...h: Handler<EventContext>[]) { this.register(event.split(this.config.eventDelimiter)[0]!, event, h); }
+    while (cursor < len) {
+      const keyStart = cursor;
+      while (cursor < len && fullPath.charCodeAt(cursor) !== 61 && fullPath.charCodeAt(cursor) !== 38) {
+        cursor++;
+      }
+      const keyEnd = cursor;
 
-  // sse(path: string, ...h: Handler<SseContext>[]) {
-  //   this.register('GET', path, h, true);
-  // }
+      let valStart = cursor;
+      let valEnd = cursor;
 
-  // --- The Dispatcher (The "Engine" bridge) ---
+      if (cursor < len && fullPath.charCodeAt(cursor) === 61) {
+        cursor++;
+        valStart = cursor;
+        while (cursor < len && fullPath.charCodeAt(cursor) !== 38) {
+          cursor++;
+        }
+        valEnd = cursor;
+      }
 
-  async handle(req: Request): Promise<Response | void> {
-    const url = new URL(req.url);
-    const engine = this.engines.get(req.method);
-    if (!engine) return new Response("Method Not Allowed", { status: 405 });
+      if (this._queryPointer < this._queryPool.length - 3) {
+        this._queryPool[this._queryPointer++] = keyStart;
+        this._queryPool[this._queryPointer++] = keyEnd;
+        this._queryPool[this._queryPointer++] = valStart;
+        this._queryPool[this._queryPointer++] = valEnd;
+      }
 
-    const ok = engine.searchInto(url.pathname, this._pool, this._out);
-    if (!ok || !this._out.found) return new Response("Not Found", { status: 404 });
-
-    const record = this._out.value!;
-    const params = this.extractParams(url.pathname, engine, this._out);
-
-    if (record.isSse) {
-      return this.handleSse(req, params, record.pipeline);
+      if (cursor < len && fullPath.charCodeAt(cursor) === 38) {
+        cursor++;
+      }
     }
 
-    const ctx = await this.createHttpContext(req, url, params);
-    await this.runPipeline(ctx, record.pipeline);
-    return (ctx as any)._response || new Response("OK");
-  }
+    const query: Record<PropertyKey, string> = {};
+    const pairCount = this._queryPointer >> 2;
 
-  handleEvent(ws: any, message: any) {
-    const data = JSON.parse(message);
-    const eventName = data.event || '';
-    const engine = this.engines.get(eventName.split(this.config.eventDelimiter)[0]);
+    for (let i = 0; i < pairCount; i++) {
+      const keyStart = this._queryPool[i * 4];
+      const keyEnd = this._queryPool[i * 4 + 1];
+      const valStart = this._queryPool[i * 4 + 2];
+      const valEnd = this._queryPool[i * 4 + 3];
 
-    if (engine && engine.searchInto(eventName, this._pool, this._out)) {
-      const params = this.extractParams(eventName, engine, this._out);
-      const ctx = this.createEventContext(ws, data, eventName, params);
-      this.runPipeline(ctx, this._out.value!.pipeline);
+      const key = fullPath.substring(keyStart ?? 0, keyEnd);
+      const val = fullPath.substring(valStart ?? 0, valEnd);
+
+      query[decodeURIComponent(key)] = decodeURIComponent(val);
     }
+
+    return query;
   }
 
-  // --- Internal Factories ---
+  // ==========================================================================
+  // ROUTE MATCHING & EXECUTION
+  // ==========================================================================
+
+  find<C extends RouteContext, TParams extends Record<PropertyKey, string>, TQuery extends Record<PropertyKey, string>>(fullPath: string, method: HttpMethod | EventMethod | StreamMethod = 'GET'): {
+    record: ContextRecord<C> | null;
+    params: TParams | null;
+    query: TQuery | null;
+  } {
+    // Split path and query
+    let queryStart = -1;
+    for (let i = 0; i < fullPath.length; i++) {
+      if (fullPath.charCodeAt(i) === 63) {
+        queryStart = i;
+        break;
+      }
+    }
+
+    const path = queryStart === -1 ? fullPath : fullPath.substring(0, queryStart);
+    const query = queryStart === -1 ? null : this.parseQuery(fullPath, queryStart);
+
+    const engine = this._engines.get(method);
+    if (!engine) {
+      return { record: null, params: null, query: null };
+    }
+
+    const result = this.matchRoute<ContextRecord<C>>(engine, path, this._pool, this._out);
+
+    const { value, params } = result.found ? result : { value: null, params: null };
+    return { record: value, params: params as TParams, query: query as TQuery };
+  }
+
+  async execute<
+    TContext extends BaseContext<any>,
+    TParams extends Record<PropertyKey, string>
+  >(fullPath: string, method: HttpMethod | EventMethod | StreamMethod = 'GET', protocol: Protocol, context: Partial<TContext> = {}): Promise<any> {
+    const { record, params, query } = this.find(fullPath, method);
+
+    if (!record?.pipeline) {
+      throw new Error(`No route found for: ${method} ${fullPath}`);
+    }
+
+    // Use the registered pipeline and create a base context; cast the args to satisfy the generic
+    const pipeline = record.pipeline as Pipeline<any>;
+    const result = await createBaseContext<TContext, TParams>(({ params, query } as unknown) as TParams);
+    const ctx = (result as { ctx: TContext }).ctx as TContext;
+
+    let index = 0;
+
+    const next = async (): Promise<void> => {
+      if (index >= pipeline.length) return;
+
+      const fn = pipeline[index++];
+
+      if (index === pipeline.length) {
+        await (fn as Handler<TContext>)(ctx);
+      } else {
+        await (fn as Middleware<TContext>)(ctx, next);
+      }
+    };
+
+    await next();
+    return ctx;
+  }
+
+  /**
+   * Handle request asynchronously with full middleware pipeline
+   */
+  async handle(fullPath: string, method: HttpMethod | EventMethod | StreamMethod = 'GET', protocol: Protocol, context: Partial<RouteContext> = {}): Promise<RouteContext> {
+    return this.execute(fullPath, method, protocol, context);
+  }
+
+  /**
+   * Handle request synchronously - NO async middleware allowed
+   * Returns context immediately after all sync handlers execute
+   */
+  handleSync<
+    TContext extends BaseContext<any>,
+    TParams extends Record<PropertyKey, string>
+  >(fullPath: string, method: HttpMethod | EventMethod | StreamMethod = 'GET', context: Partial<RouteContext> = {}): RouteContext {
+    const { record, params, query } = this.find(fullPath, method);
+
+    if (!record?.pipeline) {
+      throw new Error(`No route found for: ${method} ${fullPath}`);
+    }
+
+    // Use the registered pipeline and create a base context; cast the args to satisfy the generic
+    const pipeline = record.pipeline as Pipeline<any>;
+    const result = createBaseContext<TContext, TParams>(({ params, query } as unknown) as TParams);
+    const ctx = (result as { ctx: TContext }).ctx as TContext;
+
+    let index = 0;
+
+    // Synchronous execution - no async/await
+    for (const fn of pipeline) {
+      const result = fn(ctx);
+
+      // Detect if handler returned a Promise
+      if (result && typeof result === 'object' && 'then' in result) {
+        throw new Error('handleSync cannot execute async handlers - use handle() instead');
+      }
+    }
+
+    return ctx;
+  }
+
+  // ==========================================================================
+  // INTROSPECTION & UTILITIES
+  // ==========================================================================
+
+  private normalizePath(path: string, delimiter?: AllowedDelimiter): string {
+    if (!path || path === "") return '';
+
+    let result = '';
+    let lastWasDelimiter = false;
+
+    for (let i = 0; i < path.length; i++) {
+      const ch = path[i];
+      if (ch === delimiter || Object.values(AllowedDelimiterMap).includes(ch as AllowedDelimiter)) {
+        if (!lastWasDelimiter && result.length > 0) {
+          result += ch;
+        }
+        lastWasDelimiter = true;
+      } else {
+        result += ch;
+        lastWasDelimiter = false;
+      }
+    }
+
+    if (result.length > 1 && (result[result.length - 1] === delimiter || Object.values(AllowedDelimiterMap).includes(result[result.length - 1] as AllowedDelimiter))) {
+      result = result.slice(0, -1);
+    }
+
+    return result;
+  }
+
+  private getEngine(key: HttpMethod | EventMethod | StreamMethod, delimiter?: AllowedDelimiter): RadixEngine<ContextRecord<RouteContext>> {
+    if (!this._engines.has(key)) {
+      this._engines.set(key, new RadixEngine({ delimiter }));
+    }
+    return this._engines.get(key)!;
+  }
+
+  private clearCache(): void {
+    this._engines.clear();
+  }
+
+  private matchRoute<T>(
+    engine: RadixEngine<T>,
+    path: string,
+    pool: Uint32Array,
+    out: SearchResult<T>,
+  ): Match<T> {
+    const ok = engine.searchInto(path, pool, out);
+    if (!ok || !out.found) return { found: false, value: undefined, params: undefined };
+
+    const value = out.value as T;
+    const paramCount = (out.paramCount || 0) as number;
+
+    if (paramCount === 0) {
+      // Avoid allocating params object.
+      return { found: true, value, params: Object.create(null) };
+    }
+
+    const params = this.extractParams(path, engine, out);
+
+    return { found: true, value, params };
+  }
 
   private extractParams(path: string, engine: RadixEngine<any>, out: SearchResult<any>): Record<string, string> {
     const params: Record<string, string> = {};
@@ -210,82 +372,4 @@ export class AetherRouter {
     return params;
   }
 
-  private async createHttpContext(req: Request, url: URL, params: Record<string, string>): Promise<HttpContext> {
-    const headers = new Headers();
-    const ctx: any = {
-      id: crypto.randomUUID(),
-      protocol: req.headers.get('upgrade') ? 'HTTP/1.1' : 'HTTP/2',
-      request: req,
-      method: req.method,
-      query: url.searchParams,
-      params,
-      store: new Map(),
-      ip: req.headers.get('x-forwarded-for') || '127.0.0.1',
-      set: {
-        status: (c: number) => { ctx._status = c; return ctx; },
-        header: (n: string, v: string) => { headers.set(n, v); return ctx; }
-      },
-      json: (d: any) => { ctx._response = Response.json(d, { status: ctx._status, headers }); return ctx._response; },
-      text: (d: string) => { ctx._response = new Response(d, { status: ctx._status, headers }); return ctx._response; }
-    };
-    return ctx;
-  }
-
-  private handleSse(req: Request, params: Record<string, string>, pipeline: Pipeline<SseContext>): Response {
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-    const encoder = new TextEncoder();
-
-    const ctx: SseContext = {
-      id: crypto.randomUUID(),
-      protocol: 'SSE',
-      request: req,
-      params,
-      store: new Map(),
-      send: (data, event, id) => {
-        if (id) writer.write(encoder.encode(`id: ${id}\n`));
-        if (event) writer.write(encoder.encode(`event: ${event}\n`));
-        writer.write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-      },
-      close: () => writer.close(),
-      onClose: (cb) => req.signal.addEventListener('abort', cb)
-    };
-
-    this.runPipeline(ctx, pipeline);
-
-    return new Response(readable, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      }
-    });
-  }
-
-  private createEventContext(ws: any, data: any, pattern: string, params: Record<string, string>): EventContext {
-    return {
-      id: crypto.randomUUID(),
-      protocol: 'WS',
-      pattern,
-      params,
-      payload: data.data,
-      metadata: new Map(Object.entries(data.metadata || {})),
-      socket: ws,
-      store: new Map(),
-      reply: (event, d) => ws.send(JSON.stringify({ event, data: d })),
-      broadcast: (event, d) => ws.publish('global', JSON.stringify({ event, data: d })),
-      to: (room, event, d) => ws.publish(room, JSON.stringify({ event, data: d })),
-      ack: (d) => ws.send(JSON.stringify({ event: `${pattern}:ack`, data: d }))
-    };
-  }
-
-  private async runPipeline(ctx: any, pipeline: Pipeline<any>) {
-    let index = 0;
-    const next = async () => {
-      if (index < pipeline.length) {
-        await pipeline[index++]!(ctx, next);
-      }
-    };
-    await next();
-  }
 }

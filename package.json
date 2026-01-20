@@ -15,5 +15,10 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "dependencies": {
+    "@types/node": "^25.0.9",
+    "autocannon": "^8.0.0",
+    "uuid": "^13.0.0"
+  }
 }
