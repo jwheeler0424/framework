@@ -2,17 +2,18 @@
 // PIPELINE
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type Handler<C = any> = (ctx: C) => void | Promise<void>;
-export type ErrorHandler<C = any> = (error: Error, ctx: C) => void | Promise<void>;
+import type { ErrorHandler, Handler, RouteContext } from "./types";
 
-export interface PipelineConfig<C> {
+
+
+export interface PipelineConfig<C extends RouteContext> {
   beforeHandle?: Handler<C>[];
   handler: Handler<C>;
   afterHandle?: Handler<C>[];
   onError?: ErrorHandler<C>;
 }
 
-export class AetherPipeline<C = any> {
+export class AetherPipeline<C extends RouteContext> {
   private stack: Handler<C>[];
   private stackLength: number; // Cache length
   private errorHandler: ErrorHandler<C> | null;

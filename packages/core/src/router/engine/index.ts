@@ -81,6 +81,7 @@ export type RadixEngineOptions = {
   nodePoolSizeHint?: number;
   delimiter?: AllowedDelimiter;
   assumeAscii?: boolean;
+  ignoreCase?: boolean;
 };
 
 /**
@@ -202,6 +203,7 @@ export class RadixEngine<T> {
   private _frozen: boolean;
   private _delim: number;
   private _assumeAscii: boolean;
+  private _ignoreCase: boolean;
 
   constructor(opts?: RadixEngineOptions) {
     // Node indices are 1-based. We'll keep nodes[0] unused sentinel.
@@ -233,6 +235,7 @@ export class RadixEngine<T> {
 
     this._frozen = false;
     this._assumeAscii = !!opts?.assumeAscii;
+    this._ignoreCase = !!opts?.ignoreCase;
 
     // Configurable path delimiter.
     // Must be in an allowlist. Default '/'.
@@ -280,8 +283,9 @@ export class RadixEngine<T> {
 
     const ensureChild = (from: number, ch: number): number => {
       const fromNode = this.nodes[from]!;
+      const normCh = this._ignoreCase ? this._toLowerAsciiCode(ch) : ch;
       const base = fromNode.transBase | 0;
-      const slot = (base + (ch & 0x7f)) | 0;
+      const slot = (base + (normCh & 0x7f)) | 0;
       const existing = this.transitionsPool[slot]! | 0;
       if (existing !== 0) return existing;
       const newIndex = this._newNode();
@@ -457,8 +461,9 @@ export class RadixEngine<T> {
       const ch = cc & 0x7f;
 
       // Static branch
-      const next = this.transitionsPool[(node.transBase + ch) | 0]! | 0;
-      if (next !== 0 && cc === ch) {
+      const normCh = this._ignoreCase ? this._toLowerAsciiCode(cc) : cc;
+      const next = this.transitionsPool[(node.transBase + normCh) | 0]! | 0;
+      if (next !== 0 && normCh === (this._ignoreCase ? this._toLowerAsciiCode(cc) : cc)) {
         nodeIndex = next;
         cursor++;
         continue;
@@ -931,7 +936,7 @@ export class RadixEngine<T> {
         let litLen = 0;
 
         while (i < len) {
-          const c2 = template.charCodeAt(i);
+          let c2 = template.charCodeAt(i);
           if (((c2 & 0x7f) === delim) || c2 === ASCII_LBRACE) break;
           if (c2 === ASCII_RBRACE) throw this._err("Unmatched '}'", i);
           if (c2 === ASCII_STAR) throw this._err("'*' is only supported as trailing wildcard segment", i);
@@ -947,6 +952,7 @@ export class RadixEngine<T> {
           }
 
           if ((c2 & 0x7f) !== c2) throw this._err("Non-ASCII literal in template", i);
+          if (this._ignoreCase && c2 >= 65 && c2 <= 90) c2 += 32;
           this.literalPool += String.fromCharCode(c2);
           litLen++;
           i++;
@@ -1071,6 +1077,10 @@ export class RadixEngine<T> {
     const e = new Error(`${message} at index ${index}`);
     (e as any).index = index;
     return e;
+  }
+
+  private _toLowerAsciiCode(cc: number): number {
+    return cc >= 65 && cc <= 90 ? cc + 32 : cc;
   }
 }
 
