@@ -3,7 +3,7 @@
   "description": "A barebones monorepo starter kit for modern web development.",
   "private": true,
   "devDependencies": {
-    "turbo": "^2.7.4"
+    "turbo": "^2.7.5"
   },
   "scripts": {
     "dev": "turbo run dev",
