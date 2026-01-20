@@ -1,0 +1,30 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalEnv": [],
+  "globalDependencies": [".env", "tsconfig.json"],
+  "ui": "tui",
+  "tasks": {
+    "build": {
+      "dependsOn": ["prebuild", "^build"],
+      "env": [],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": ["dist/**"]
+    },
+    "prebuild": {
+
+    },
+    "lint": {
+      "dependsOn": ["^lint"]
+    },
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
+    "check-types": {
+      "dependsOn": ["transit"]
+    },
+    "dev": {
+      "persistent": true,
+      "cache": false
+    }
+  }
+}

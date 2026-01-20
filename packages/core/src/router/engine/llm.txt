@@ -1,0 +1,135 @@
+RadixEngine<T> — LLM Integration Guide (Authoritative)
+
+Purpose
+- RadixEngine<T> is a high-performance route matching engine.
+- It matches a decoded ASCII path string against inserted route templates and returns:
+  - match status
+  - matched value (type T)
+  - parameter capture ranges in a provided Uint32Array
+  - optional wildcard “rest” range for trailing /* matches
+
+Core Data Types
+1) SearchResult<T>
+- Shape:
+  - found: boolean
+  - value?: T
+  - nodeIndex?: number
+  - paramCount?: number
+  - wildcardStart?: number
+  - wildcardEnd?: number
+- Semantics:
+  - After calling searchInto(), the engine mutates this object.
+  - If found is true:
+    - value is the matched value
+    - nodeIndex identifies the matched terminal node (used to query param keys)
+    - paramCount is the number of captured params
+    - wildcardStart/wildcardEnd are set only for trailing wildcard route matches
+
+2) memoryPool: Uint32Array
+- Captures are written as start/end pairs:
+  - capture i start = memoryPool[i*2]
+  - capture i end   = memoryPool[i*2+1]
+- Ranges refer to indices into the original path string used for matching.
+- No strings are created during matching; parent code must create substrings if needed.
+
+Template Syntax Summary
+- Templates must begin with '/'
+- Static literals: normal ASCII characters
+- Escaping: backslash escapes the next char as a literal (e.g. '\{', '\}', '\\')
+- Parameters:
+  - {name}
+  - name characters: A-Z a-z 0-9 _
+  - param names must be unique within the template
+- Multiple parameters per segment are allowed if separated by static delimiters:
+  - /files/{name}.{ext}
+  - /v{version}/users/{id}
+- Unsupported: adjacent params without delimiter: /{a}{b}
+- Wildcard:
+  - Only trailing segment "/*" supported (e.g. /static/*)
+  - '*' must be the last char in the template and preceded by '/'
+  - Wildcard does not create a capture; instead the match returns wildcardStart/wildcardEnd.
+  - wildcardStart is the cursor index where the wildcard began consuming remaining characters (often at the path position corresponding to the '*' segment).
+
+Priority Rules
+- At each node the engine tries:
+  1) static transition (exact char match)
+  2) parameter edges (up to 4 variants)
+  3) wildcard edge (trailing /*)
+
+Public API (methods)
+- new RadixEngine<T>(opts?)
+  - options may include:
+    - nodePoolSizeHint?: number
+    - assumeAscii?: boolean (if enabled in the build; if true, engine skips ASCII validation; caller must enforce decoded ASCII paths)
+- insert(pathTemplate: string, value: T): void
+  - inserts a route template with associated value
+  - throws on invalid template or duplicates
+- delete(pathTemplate: string): void
+  - tombstone deletion: clears terminal value and metadata; does not prune nodes
+  - requires engine retained template->node mapping (may be removed by finalize dropInternMap)
+- finalize({ freeze?: boolean, dropInternMap?: boolean }): void
+  - freeze: disallow insert/delete
+  - dropInternMap: remove template map to reduce memory; delete(template) becomes unavailable
+- search(path: string): SearchResult<T>
+  - convenience wrapper; typically reuses internal buffers; returned object should be treated as ephemeral
+- searchInto(path: string, memoryPool: Uint32Array, out: SearchResult<T>): boolean
+  - hot-path API; zero-allocation if caller reuses memoryPool/out
+- getParamKeysForNode(nodeIndex: number): string[]
+  - returns param keys in capture order; this allocates; router may cache results
+- isPrefix(prefix: string): boolean
+- prefixSearch(prefix: string): T[]
+- insertBatchParallel(templates: string[], values: T[]): void
+- insertBatch(entries: Array<[template: string, value: T]>): void
+- insertBatchFromObject(routes: Record<string, T>): void
+
+How to Use (recommended high-performance pattern)
+- Create engine and insert routes:
+  - engine.insert("/api/users/{id}", handler)
+  - engine.insert("/api/files/{name}.{ext}", handler)
+  - engine.insert("/static/*", handler)
+- Optionally finalize:
+  - engine.finalize({ freeze: true })
+- Per request:
+  - Use a reused Uint32Array pool sized to (maxParams*2)
+  - Use a reused SearchResult<T> object
+  - Call engine.searchInto(path, pool, out)
+  - If out.found:
+    - out.value is the route value (handler)
+    - out.paramCount indicates how many captures were written
+    - call engine.getParamKeysForNode(out.nodeIndex) to get param names
+    - assemble params via substring using pool indices:
+      - params[keys[i]] = path.substring(pool[i*2], pool[i*2+1])
+    - if wildcardStart is set:
+      - wildcardRest = path.slice(out.wildcardStart, out.wildcardEnd ?? path.length)
+
+Constraints / Contract (important)
+- The engine is designed for decoded ASCII paths.
+- If assumeAscii=true, the caller must ensure:
+  - path contains only ASCII code units
+  - path is already decoded/normalized as needed
+- Do not allocate memoryPool or out in the hot loop; reuse them.
+
+LLM Guidance for Assistance
+When advising code that uses this engine:
+- Prefer searchInto() for performance; avoid per-call allocations.
+- Treat search() return as ephemeral; do not store it for later.
+- Always size memoryPool to 2 * max expected params for the route set.
+- Parameter extraction is separate from matching; do it after a match.
+- Wildcard rest extraction is done using wildcardStart/wildcardEnd and string slicing (optional).
+- Deletion is tombstone-based; it disables a terminal route but does not remove shared structure.
+- Up to 4 param edge variants exist at a node; insertion may throw if too many variants under same prefix.
+
+Suggested Minimal Router Wrapper Skeleton
+- engine: RadixEngine<Handler>
+- pool: Uint32Array
+- out: SearchResult<Handler>
+- match(path):
+  - engine.searchInto(path, pool, out)
+  - if !out.found return null
+  - keys = engine.getParamKeysForNode(out.nodeIndex)
+  - params = Object.create(null)
+  - for i in 0..out.paramCount-1:
+      params[keys[i]] = path.substring(pool[i*2], pool[i*2+1])
+  - return { handler: out.value, params, wildcard: out.wildcardStart != null ? path.slice(out.wildcardStart) : null }
+
+End of llm.txt

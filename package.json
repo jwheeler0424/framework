@@ -1,0 +1,19 @@
+{
+  "name": "framework",
+  "description": "A barebones monorepo starter kit for modern web development.",
+  "private": true,
+  "devDependencies": {
+    "turbo": "^2.7.4"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint"
+  },
+  "packageManager": "bun@1.3.5",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

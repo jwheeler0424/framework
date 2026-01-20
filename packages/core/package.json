@@ -1,0 +1,33 @@
+{
+  "name": "framework-core",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "build": "tsc",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix && prettier --write ."
+  },
+  "lint-staged": {
+    ".{ts,js}": "eslint --cache --fix",
+    ".{ts,js,css,md}": "prettier --write",
+    ".js": "eslint --cache --fix",
+    ".{js,css,md}": "prettier --write"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "typescript": "latest"
+  },
+  "dependencies": {
+    "find-my-way": "^9.4.0",
+    "hono": "^4.11.4",
+    "radix3": "^1.1.2"
+  }
+}
