@@ -36,5 +36,6 @@
     "editor.defaultFormatter": "vscode.json-language-features"
   },
   "turbo.useLocalTurbo": true,
-  "snyk.advanced.autoSelectOrganization": true
+  "snyk.advanced.autoSelectOrganization": false,
+  "snyk.advanced.organization": "d19388c0-7f5b-478d-9585-b1e89db12291"
 }
