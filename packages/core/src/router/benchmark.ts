@@ -1,172 +1,103 @@
-// ═══════════════════════════════════════════════════════════════════════════
-// BENCHMARKING & PROFILING UTILITIES
-// ═══════════════════════════════════════════════════════════════════════════
+import { performance } from "perf_hooks";
 
-import type { RouterContext } from ".";
-import type { RadixEngine } from "./engine";
-function percentileFromSorted(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(sorted.length * p)));
-  return sorted[idx]!;
-}
+// =========================================================
+// 1. INCLUDE THE PATTERN MACHINE CODE (Simplified for Bench)
+// =========================================================
+import { PatternMachine } from "./machine";
 
-/**
- * Reservoir sampler for latency samples.
- * Keeps a uniform sample of all seen values with fixed memory.
- */
-class Reservoir {
-  private buf: number[];
-  private size: number;
-  private seen: number;
+// =========================================================
+// 2. THE COMPETITOR (Standard Regex Loop)
+// =========================================================
+class RegexRouter {
+  routes: { regex: RegExp; id: string }[] = [];
 
-  constructor(size: number) {
-    this.buf = new Array(size);
-    this.size = size;
-    this.seen = 0;
+  add(pattern: string, id: string) {
+    // Convert /users/{id} -> ^/users/([^/]+)$
+    let r = pattern
+      .replace(/\//g, "\\/")
+      .replace(/{([^}]+)}/g, "([^/]+)")
+      .replace(/\*/g, ".*");
+    this.routes.push({ regex: new RegExp(`^${r}$`), id });
   }
 
-  push(v: number) {
-    const i = this.seen++;
-    if (i < this.size) {
-      this.buf[i] = v;
-      return;
+  match(input: string) {
+    for (const route of this.routes) {
+      const match = route.regex.exec(input);
+      if (match) return [{ data: route.id, params: match.slice(1) }];
     }
-    // Vitter's Algorithm R
-    const j = (Math.random() * (i + 1)) | 0;
-    if (j < this.size) this.buf[j] = v;
-  }
-
-  values(): number[] {
-    const n = Math.min(this.seen, this.size);
-    // slice to actual length
-    return this.buf.slice(0, n);
+    return [];
   }
 }
 
-export class RouterBenchmark {
-  /**
-   * Measure raw throughput with high precision.
-   *
-   * Changes vs original:
-   * - No longer stores 1M latencies (fixes heap blow-up).
-   * - Uses reservoir sampling (default 8192 samples) for percentiles.
-   * - Avoids `await` for non-Gemini routers (reduces async overhead/noise).
-   */
-  static async measureFindThroughput<C extends RouterContext>(
-    router: RadixEngine<unknown>,
-    requests: Array<{ method: string; path: string }>,
-    iterations = 1_000_000,
-    opts?: { warmupIterations?: number; sampleSize?: number }
-  ): Promise<{
-    opsPerSec: number;
-    avgLatencyNs: number;
-    minLatencyNs: number;
-    maxLatencyNs: number;
-    p50Ns: number;
-    p95Ns: number;
-    p99Ns: number;
-  }> {
-    const warmupIterations = opts?.warmupIterations ?? 10_000;
-    const sampleSize = opts?.sampleSize ?? 8192;
+// =========================================================
+// 3. GENERATE LOAD
+// =========================================================
+console.log("Generating 1,000 patterns...");
 
-    let minLatency = Infinity;
-    let maxLatency = 0;
+const machine = new PatternMachine<string>();
+const regexRouter = new RegexRouter();
+const sampleInputs: string[] = [];
 
-    const reservoir = new Reservoir(sampleSize);
+// Create 1000 routes: /api/v1/resource-N/{id}/action
+for (let i = 0; i < 1000; i++) {
+  const pattern = `/api/v1/resource-${i}/{id}/action`;
+  machine.add(pattern, `route-${i}`);
+  regexRouter.add(pattern, `route-${i}`);
 
-    // Warmup (JIT compilation)
-    for (let i = 0; i < warmupIterations; i++) {
-      const req = requests[i % requests.length];
-      if (!req) continue;
-      try {
-        // Most engines' find() is sync boolean; don't await.
-        (router as any).search(req.path);
-      } catch {
-        // ignore
-      }
-    }
-
-    const startTime = Bun.nanoseconds();
-
-    for (let i = 0; i < iterations; i++) {
-      const req = requests[i % requests.length];
-      if (!req) continue;
-
-      const iterStart = Bun.nanoseconds();
-      try {
-        (router as any).search(req.path);
-      } catch {
-        // ignore
-      }
-      const iterEnd = Bun.nanoseconds();
-
-      const latency = iterEnd - iterStart;
-      reservoir.push(latency);
-      if (latency < minLatency) minLatency = latency;
-      if (latency > maxLatency) maxLatency = latency;
-    }
-
-
-    const endTime = Bun.nanoseconds();
-    const totalNs = endTime - startTime;
-    const avgLatencyNs = totalNs / iterations;
-    const opsPerSec = (iterations / totalNs) * 1e9;
-
-    // Percentiles from sample
-    const sample = reservoir.values();
-    sample.sort((a, b) => a - b);
-
-    return {
-      opsPerSec,
-      avgLatencyNs,
-      minLatencyNs: minLatency === Infinity ? 0 : minLatency,
-      maxLatencyNs: maxLatency,
-      p50Ns: percentileFromSorted(sample, 0.50),
-      p95Ns: percentileFromSorted(sample, 0.95),
-      p99Ns: percentileFromSorted(sample, 0.99)
-    };
-  }
-
-  /**
-   * Memory profiling
-   *
-   * Change vs original:
-   * - Avoids `await` for non-Gemini routers.
-   * - Uses globalThis.gc when available.
-   */
-  static async profileMemory<C extends RouterContext>(
-    router: RadixEngine<unknown>,
-    requests: Array<{ method: string; path: string }>,
-    iterations = 100_000
-  ): Promise<{
-    heapUsedBefore: number;
-    heapUsedAfter: number;
-    heapGrowth: number;
-  }> {
-    // Force GC if available (Bun may not expose this unless launched accordingly)
-    const gc = (globalThis as any).gc as undefined | (() => void);
-    if (gc) gc();
-
-    const heapBefore = process.memoryUsage().heapUsed;
-
-    for (let i = 0; i < iterations; i++) {
-      const req = requests[i % requests.length];
-      if (!req) continue;
-      try {
-        (router as any).search(req.path);
-      } catch {
-        // ignore
-      }
-    }
-
-    if (gc) gc();
-
-    const heapAfter = process.memoryUsage().heapUsed;
-
-    return {
-      heapUsedBefore: heapBefore,
-      heapUsedAfter: heapAfter,
-      heapGrowth: heapAfter - heapBefore
-    };
-  }
+  if (i % 100 === 0) sampleInputs.push(`/api/v1/resource-${i}/abc-123/action`);
 }
+
+// Add a wildcard at the end
+machine.add("/static/*", "wildcard");
+regexRouter.add("/static/*", "wildcard");
+sampleInputs.push("/static/file.png");
+
+// Add a pure static
+machine.add("/health", "health");
+regexRouter.add("/health", "health");
+sampleInputs.push("/health");
+
+console.log(
+  `Setup complete. Routes: 1002. Sample inputs: ${sampleInputs.length}`,
+);
+
+// =========================================================
+// 4. RUN BENCHMARK
+// =========================================================
+
+function benchmark(name: string, fn: () => void) {
+  const start = performance.now();
+  const iterations = 50_000;
+
+  for (let i = 0; i < iterations; i++) {
+    fn();
+  }
+
+  const end = performance.now();
+  const totalTime = end - start;
+  const opsPerSec = (iterations / totalTime) * 1000;
+
+  console.log(`\n${name}`);
+  console.log(`Total Time: ${totalTime.toFixed(2)}ms`);
+  console.log(`Ops/Sec:    ${Math.round(opsPerSec).toLocaleString()}`);
+  return opsPerSec;
+}
+
+// Warmup
+console.log("\nWarming up V8...");
+benchmark("Warmup (Machine)", () => machine.match(sampleInputs[0]!));
+benchmark("Warmup (Regex)", () => regexRouter.match(sampleInputs[0]!));
+
+// Actual Test
+console.log("\n--- STARTING RACE ---");
+
+const machineOps = benchmark("PatternMachine (Radix)", () => {
+  for (const input of sampleInputs) machine.match(input);
+});
+
+const regexOps = benchmark("Standard Regex Loop", () => {
+  for (const input of sampleInputs) regexRouter.match(input);
+});
+
+const multiplier = (machineOps / regexOps).toFixed(1);
+console.log(`\n>>> RESULT: PatternMachine is ${multiplier}x FASTER <<<`);
