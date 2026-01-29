@@ -1,9 +1,14 @@
+/**
+ * Benchmark
+ * --------------------
+ */
+
 import { performance } from "perf_hooks";
 
 // =========================================================
 // 1. INCLUDE THE PATTERN MACHINE CODE (Simplified for Bench)
 // =========================================================
-import { PatternMachine } from "./machine";
+import { PatternMachine } from "./";
 
 // =========================================================
 // 2. THE COMPETITOR (Standard Regex Loop)
