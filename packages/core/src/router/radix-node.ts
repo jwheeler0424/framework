@@ -37,4 +37,20 @@ export class RadixNode<T> {
   addResult(data: T) {
     this.endData.push(data);
   }
+
+  get isMergeable(): boolean {
+    // A node can be merged if:
+    // 1. It is a STATIC node
+    // 2. It has exactly ONE static child
+    // 3. It has NO param, wildcard, or recursive children
+    // 4. It is NOT an endpoint (no endData)
+    return (
+      this.type === NodeType.STATIC &&
+      this.staticChildren.size === 1 &&
+      this.paramChild === null &&
+      this.wildcardChild === null &&
+      this.wildcardRecursiveChild === null &&
+      this.endData.length === 0
+    );
+  }
 }

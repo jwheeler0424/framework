@@ -407,4 +407,44 @@ export class PatternMachine<T> {
     // Returning the first data match for this path
     return { params, data: dataList[0] as T };
   }
+
+  public optimize(): void {
+    this.compress(this.root);
+  }
+
+  private compress(node: RadixNode<T>): void {
+    // 1. Recurse down first (Depth-First)
+    for (const child of node.staticChildren.values()) {
+      this.compress(child);
+    }
+    if (node.paramChild) this.compress(node.paramChild);
+
+    // 2. Attempt to merge children into this node
+    const staticKeys = Array.from(node.staticChildren.keys());
+    for (const key of staticKeys) {
+      const child = node.staticChildren.get(key)!;
+
+      if (child.isMergeable) {
+        const grandChildKey = Array.from(child.staticChildren.keys())[0];
+        const grandChild = child.staticChildren.get(grandChildKey!)!;
+
+        // Pull the grandchild up!
+        // This effectively deletes the 'child' node and connects 'node' -> 'grandchild'
+        // but combines the strings.
+        const newPart = child.part + grandChild.part;
+
+        // We must delete the old link and create a new one with the same starting char
+        node.staticChildren.delete(key);
+
+        // Update the grandchild's part
+        grandChild.part = newPart;
+
+        // Re-insert
+        node.staticChildren.set(newPart[0]!, grandChild);
+
+        // Re-run compression on this node to see if we can merge again (multi-level compression)
+        this.compress(node);
+      }
+    }
+  }
 }

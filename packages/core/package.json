@@ -32,6 +32,7 @@
   "dependencies": {
     "find-my-way": "^9.4.0",
     "hono": "^4.11.4",
+    "path-to-regexp": "^8.3.0",
     "radix3": "^1.1.2"
   }
 }
